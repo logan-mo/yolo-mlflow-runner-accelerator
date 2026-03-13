@@ -23,9 +23,9 @@ docker run --rm --gpus all --shm-size=16g\
   -e MODEL="yolo26n.pt" \
   -e TASK="detect" \
   -e EPOCHS="300" \
-  -e BATCH="128" \
-  -e WORKERS="8" \
-  -v /home/ubuntu/Desktop/Army_Project_Trainings/data/fixed_dataset_tanks_only:/data:ro \
+  -e BATCH="32" \
+  -e WORKERS="1" \
+  -v /home/ubuntu/Desktop/Army_Project_Trainings/data/fixed_dataset_tanks_only:/data:rw \
   -v /home/ubuntu/Desktop/Army_Project_Trainings/runs:/outputs \
   yolo-mlflow-runner:latest
 

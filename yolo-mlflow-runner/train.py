@@ -3,10 +3,25 @@ import json
 import shutil
 from pathlib import Path
 
-import mlflow
-from ultralytics import YOLO
-import albumentations as A
 import cv2
+import mlflow
+import albumentations as A
+from ultralytics import YOLO
+
+from dotenv import load_dotenv
+
+cv2.setNumThreads(0)
+cv2.ocl.setUseOpenCL(False)
+
+
+def load_environment() -> None:
+    """
+    Loads environment variables from a .env file if present.
+    Priority (highest -> lowest):
+      1) real OS environment variables
+      2) .env file values
+    """
+    load_dotenv(dotenv_path=os.getenv("DOTENV_PATH", ".env"), override=False)
 
 
 def env(name: str, default: str = "") -> str:
@@ -48,26 +63,18 @@ def copytree_safe(src: Path, dst: Path) -> None:
 
 
 def main():
-    # ---- MLflow config ----
-    tracking_uri = env("MLFLOW_TRACKING_URI")
-    exp_name = env("MLFLOW_EXPERIMENT_NAME", "yolo_runs")
-    run_name = env("MLFLOW_RUN_NAME", "")
 
-    if not tracking_uri:
-        raise RuntimeError("MLFLOW_TRACKING_URI is required (point to Machine 1).")
-
-    mlflow.set_tracking_uri(tracking_uri)
-    mlflow.set_experiment(exp_name)
+    load_environment()
 
     # ---- Training config ----
     data_yaml = env("DATA_YAML", "/data/dataset.yaml")
     model_name = env("MODEL", "yolov8n.pt")
     task = env("TASK", "detect")
     epochs = to_int("EPOCHS", 10)
-    imgsz = to_int("IMGSZ", 640)
+    imgsz = to_int("IMGSZ", 1024)
     batch = to_int("BATCH", "auto")
     device = env("DEVICE", "0")
-    workers = to_int("WORKERS", 8)
+    workers = to_int("WORKERS", 32)
     seed = to_int("SEED", 0)
 
     project_dir = Path(env("PROJECT_DIR", "/outputs/ultralytics"))
@@ -99,151 +106,125 @@ def main():
     }
 
     # ---- Run ----
-    with mlflow.start_run(run_name=run_name or None) as run:
-        mlflow.log_params(params)
 
-        # Ensure deterministic-ish where possible
-        # Ultralytics accepts seed in train()
-        yolo = YOLO(model_name)
+    # Ensure deterministic-ish where possible
+    # Ultralytics accepts seed in train()
+    yolo = YOLO(model_name)
 
-        train_kwargs = dict(
-            data=data_yaml,
-            task=task,
-            epochs=epochs,
-            imgsz=imgsz,
-            batch=batch,
-            device=device,
-            workers=workers,
-            seed=seed,
-            project=str(project_dir),
-            name=f"run_{run.info.run_id[:8]}",
-            exist_ok=True,
-            custom_transforms=[
-                # -------------------------
-                # Flips (both directions)
-                # -------------------------
-                A.HorizontalFlip(p=0.5),
-                A.VerticalFlip(p=0.5),
-                # -------------------------
-                # Perspective / drone tilt
-                # -------------------------
-                A.Perspective(scale=(0.03, 0.12), keep_size=True, p=0.5),
-                A.Affine(
-                    scale=(0.75, 1.25),
-                    translate_percent=(0.0, 0.12),
-                    rotate=(-20, 20),
-                    shear=(-10, 10),
-                    mode=cv2.BORDER_CONSTANT,
-                    p=0.7,
-                ),
-                # Make objects small (altitude simulation)
-                A.RandomResizedCrop(
-                    size=(imgsz, imgsz),
-                    scale=(0.25, 1.0),
-                    ratio=(0.75, 1.33),
-                    p=0.6,
-                ),
-                # -------------------------
-                # Motion (object + drone)
-                # -------------------------
-                A.OneOf(
-                    [
-                        A.MotionBlur(blur_limit=(9, 35)),  # strong linear motion
-                        A.GaussianBlur(blur_limit=(3, 9)),
-                    ],
-                    p=0.6,
-                ),
-                # Add directional smear feel
-                A.Downscale(scale_min=0.5, scale_max=0.85, p=0.35),
-                # -------------------------
-                # Dust / haze simulation
-                # -------------------------
-                A.OneOf(
-                    [
-                        A.RandomFog(
-                            fog_coef_lower=0.08,
-                            fog_coef_upper=0.35,
-                            alpha_coef=0.1,
-                        ),
-                        A.RandomShadow(
-                            num_shadows_lower=1,
-                            num_shadows_upper=3,
-                            shadow_dimension=5,
-                        ),
-                    ],
-                    p=0.35,
-                ),
-                # Noise (sensor + environment)
-                A.OneOf(
-                    [
-                        A.ISONoise(color_shift=(0.02, 0.1), intensity=(0.2, 0.8)),
-                        A.GaussNoise(var_limit=(20.0, 120.0)),
-                    ],
-                    p=0.4,
-                ),
-                # Lighting shifts
-                A.RandomBrightnessContrast(
-                    brightness_limit=0.3,
-                    contrast_limit=0.3,
-                    p=0.5,
-                ),
-                A.RandomGamma(gamma_limit=(70, 150), p=0.3),
-                # Compression artifacts (radio transmission feel)
-                A.ImageCompression(
-                    quality_lower=20,
-                    quality_upper=65,
-                    p=0.5,
-                ),
-            ],
-        )
-        train_kwargs.update(extra_args)
+    train_kwargs = dict(
+        data=data_yaml,
+        task=task,
+        epochs=epochs,
+        imgsz=imgsz,
+        batch=batch,
+        device=device,
+        workers=workers,
+        seed=seed,
+        project=str(project_dir),
+        name=f"run_{run.info.run_id[:8]}",
+        exist_ok=True,
+        cache=True,
+        augmentations=[
+            # -------------------------
+            # Flips (both directions)
+            # -------------------------
+            A.HorizontalFlip(p=0.5),
+            # -------------------------
+            # Perspective / drone tilt
+            # -------------------------
+            A.Perspective(scale=(0.03, 0.12), keep_size=True, p=0.5),
+            A.Affine(
+                scale=(0.75, 1.25),
+                translate_percent=(0.0, 0.12),
+                rotate=(-20, 20),
+                shear=(-10, 10),
+                p=0.7,
+            ),
+            # Make objects small (altitude simulation)
+            A.RandomResizedCrop(
+                size=(imgsz, imgsz),
+                scale=(0.25, 1.0),
+                ratio=(0.75, 1.33),
+                p=0.4,
+            ),
+            # -------------------------
+            # Motion (object + drone)
+            # -------------------------
+            A.OneOf(
+                [
+                    A.MotionBlur(blur_limit=(3, 20)),  # strong linear motion
+                    A.GaussianBlur(blur_limit=(3, 9)),
+                ],
+                p=0.6,
+            ),
+            # Add directional smear feel
+            A.Downscale(scale_range=(0.65, 0.85), p=0.35),
+            # # -------------------------
+            # # Dust / haze simulation
+            # # -------------------------
+            # A.OneOf(
+            #     [
+            #         A.RandomFog(
+            #             fog_coef_lower=0.08,
+            #             fog_coef_upper=0.35,
+            #             alpha_coef=0.1,
+            #         ),
+            #         A.RandomShadow(
+            #             num_shadows_lower=1,
+            #             num_shadows_upper=3,
+            #             shadow_dimension=5,
+            #         ),
+            #     ],
+            #     p=0.35,
+            # ),
+            # Noise (sensor + environment)
+            A.OneOf(
+                [
+                    A.ISONoise(color_shift=(0.02, 0.1), intensity=(0.2, 0.8)),
+                    A.GaussNoise(var_limit=(20.0, 120.0)),
+                ],
+                p=0.4,
+            ),
+            # Lighting shifts
+            A.RandomBrightnessContrast(
+                brightness_limit=0.3,
+                contrast_limit=0.3,
+                p=0.5,
+            ),
+            A.RandomGamma(gamma_limit=(70, 150), p=0.3),
+            # # Compression artifacts (radio transmission feel)
+            # A.ImageCompression(
+            #     quality_lower=35,
+            #     quality_upper=65,
+            #     p=0.5,
+            # ),
+        ],
+    )
+    train_kwargs.update(extra_args)
 
-        results = yolo.train(**train_kwargs)
+    results = yolo.train(**train_kwargs)
 
-        # Ultralytics returns a Results object; metrics are usually in results.results_dict
-        results_dict = getattr(results, "results_dict", None) or {}
-        # Log metrics (MLflow expects float-ish values)
-        for k, v in results_dict.items():
-            try:
-                mlflow.log_metric(k, float(v))
-            except Exception:
-                pass
+    # Ultralytics returns a Results object; metrics are usually in results.results_dict
+    results_dict = getattr(results, "results_dict", None) or {}
+    # Log metrics (MLflow expects float-ish values)
+    for k, v in results_dict.items():
+        try:
+            mlflow.log_metric(k, float(v))
+        except Exception:
+            pass
 
-        # Locate Ultralytics run directory
-        # Commonly: {project}/{name}
-        run_dir = project_dir / train_kwargs["name"]
-        if not run_dir.exists():
-            # Fallback: Ultralytics sometimes writes to runs/{task}/{name}
-            alt = Path("runs") / task / train_kwargs["name"]
-            if alt.exists():
-                run_dir = alt
+    # Locate Ultralytics run directory
+    # Commonly: {project}/{name}
+    run_dir = project_dir / train_kwargs["name"]
+    if not run_dir.exists():
+        # Fallback: Ultralytics sometimes writes to runs/{task}/{name}
+        alt = Path("runs") / task / train_kwargs["name"]
+        if alt.exists():
+            run_dir = alt
 
-        # Log key artifacts to MLflow
-        if run_dir.exists():
-            mlflow.log_artifacts(str(run_dir), artifact_path="ultralytics_run")
-
-        # Export/copy to local volume for retention
-        local_export = export_dir / f"{run.info.run_id}"
-        copytree_safe(run_dir, local_export)
-
-        # Also store a minimal manifest
-        manifest = local_export / "manifest.json"
-        manifest.write_text(
-            json.dumps(
-                {
-                    "mlflow_tracking_uri": tracking_uri,
-                    "experiment": exp_name,
-                    "run_id": run.info.run_id,
-                    "params": params,
-                    "run_dir": str(run_dir),
-                    "export_dir": str(local_export),
-                },
-                indent=2,
-            )
-        )
-
-        print(f"MLflow run_id: {run.info.run_id}")
-        print(f"Local export: {local_export}")
+    # Log key artifacts to MLflow
+    if run_dir.exists():
+        mlflow.log_artifacts(str(run_dir), artifact_path="ultralytics_run")
 
 
 if __name__ == "__main__":

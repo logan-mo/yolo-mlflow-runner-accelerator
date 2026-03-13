@@ -12,3 +12,4 @@ data/
 runs/
 *.pt
 data.yaml
+*.mp4
